@@ -427,6 +427,15 @@ async def test_aresponses_websocket_strips_responses_routing_prefix_from_openai_
 
 _INJECTION_POINT_INPUT = [{"role": "system", "content": "You are terse."}, {"role": "user", "content": "hi"}]
 _SYSTEM_INJECTION_POINT = [{"location": "message", "role": "system"}]
+_ANTHROPIC_MESSAGES_PAYLOAD = {
+    "id": "msg_1",
+    "type": "message",
+    "role": "assistant",
+    "model": "claude-sonnet-4-5",
+    "content": [{"type": "text", "text": "Done."}],
+    "stop_reason": "end_turn",
+    "usage": {"input_tokens": 10, "output_tokens": 5},
+}
 
 
 def _sent_body(mock_post) -> dict:
@@ -598,3 +607,87 @@ def test_responses_custom_api_base_sends_no_openai_markers():
         body = _sent_body(mock_post)
         assert body["input"] == _INJECTION_POINT_INPUT
         assert "prompt_cache_options" not in body
+
+
+def test_injection_points_survive_the_responses_layer():
+    """The prompt-management hook pops its own injection points on the first pass.
+
+    A Responses request carries its system prompt in `instructions`, not as a message, so
+    a role-targeted point has nothing to attach to at this layer. Providers without a
+    native Responses API are served by transforming the request into a chat completion,
+    and only there does `instructions` become a system message worth marking. Letting the
+    hook consume the configuration here strands the directive before that message exists.
+    """
+    from litellm.responses.main import _cache_control_points_outlive_this_layer
+
+    kwargs = {"cache_control_injection_points": copy.deepcopy(_SYSTEM_INJECTION_POINT), "model": "x"}
+
+    with _cache_control_points_outlive_this_layer(kwargs):
+        kwargs.pop("cache_control_injection_points")
+
+    assert kwargs["cache_control_injection_points"] == _SYSTEM_INJECTION_POINT
+    assert kwargs["model"] == "x"
+
+
+def test_injection_points_are_not_invented_when_none_were_configured():
+    """Restoring must not resurrect a key the caller never sent."""
+    from litellm.responses.main import _cache_control_points_outlive_this_layer
+
+    kwargs: dict = {"model": "x"}
+
+    with _cache_control_points_outlive_this_layer(kwargs):
+        kwargs["cache_control_injection_points"] = [{"location": "message", "role": "user"}]
+
+    assert kwargs["cache_control_injection_points"] == [{"location": "message", "role": "user"}]
+
+
+@pytest.mark.asyncio
+async def test_injection_points_still_reach_a_native_responses_provider():
+    """Providers that serve Responses natively never reach the chat-completions bridge,
+    so this layer is their only chance to inject and must keep doing so."""
+    injected_client = AsyncHTTPHandler()
+    mock_post = AsyncMock(return_value=MockResponse(_minimal_responses_api_payload("resp_native", "gpt-5.6"), 200))
+    injected_client.post = mock_post
+
+    await litellm.aresponses(
+        model="openai/gpt-5.6",
+        api_key="fake-api-key",
+        input=copy.deepcopy(_INJECTION_POINT_INPUT),
+        cache_control_injection_points=copy.deepcopy(_SYSTEM_INJECTION_POINT),
+        client=injected_client,
+    )
+
+    body = _sent_body(mock_post)
+    assert body["input"][0]["content"][0]["prompt_cache_breakpoint"] == {"mode": "explicit"}
+    assert "cache_control_injection_points" not in body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "points",
+    [
+        pytest.param([{"location": "message", "role": "system"}], id="system-only"),
+        pytest.param(
+            [{"location": "message", "role": "user"}, {"location": "message", "role": "system"}],
+            id="mixed-user-and-system",
+        ),
+    ],
+)
+async def test_instructions_are_marked_when_the_bridge_builds_the_system_message(points):
+    """The system prompt in `instructions` must be marked whether or not a second point
+    already matches an input message; a matching point must not consume the rest."""
+    injected_client = AsyncHTTPHandler()
+    mock_post = AsyncMock(return_value=MockResponse(_ANTHROPIC_MESSAGES_PAYLOAD, 200))
+    injected_client.post = mock_post
+
+    await litellm.aresponses(
+        model="anthropic/claude-sonnet-4-5",
+        api_key="fake-api-key",
+        instructions="You are a documentation assistant.",
+        input=[{"role": "user", "content": "hi"}],
+        cache_control_injection_points=copy.deepcopy(points),
+        client=injected_client,
+    )
+
+    body = _sent_body(mock_post)
+    assert body["system"][0]["cache_control"] == {"type": "ephemeral"}

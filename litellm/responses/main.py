@@ -1,6 +1,7 @@
 import asyncio
 import contextvars
-from collections.abc import Coroutine, Iterable, Mapping
+from collections.abc import Coroutine, Generator, Iterable, Mapping
+from contextlib import contextmanager
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final, Literal, Optional, cast
 
@@ -390,6 +391,35 @@ async def aresponses_api_with_mcp(
     return response
 
 
+_CACHE_CONTROL_INJECTION_POINTS: Final = "cache_control_injection_points"
+
+
+@contextmanager
+def _cache_control_points_outlive_this_layer(
+    kwargs: dict[str, Any],  # mutable-ok: the hook pops its own config out of the caller's kwargs; this puts it back
+) -> Generator[None]:
+    """Let the Responses layer inject from the configured points without consuming them.
+
+    The prompt-management hook pops ``cache_control_injection_points`` on its first pass
+    and writes back only the points it could not use. That is right for
+    /chat/completions, where the hook already sees every message. A Responses request
+    keeps its system prompt in ``instructions``, which is not a message at this layer, so
+    a role-targeted point has nothing to attach to here; providers without a native
+    Responses API are served by transforming the request into a chat completion, and only
+    there does ``instructions`` become a system message worth marking. Popping here
+    strands the directive before that message exists, which is why injection silently did
+    nothing across the whole Responses surface. Restoring the configuration afterwards
+    hands the bridge the same points to act on, while providers that serve Responses
+    natively keep injecting at this layer exactly as before.
+    """
+    configured: Final = kwargs.get(_CACHE_CONTROL_INJECTION_POINTS)
+    try:
+        yield
+    finally:
+        if configured is not None:
+            kwargs[_CACHE_CONTROL_INJECTION_POINTS] = configured
+
+
 @client
 async def aresponses(
     input: str | ResponseInputParam,
@@ -467,19 +497,20 @@ async def aresponses(
                 client_input: list[AllMessageValues] = [{"role": "user", "content": input}]
             else:
                 client_input = [item for item in input if isinstance(item, dict) and "role" in item]
-            (
-                model,
-                merged_input,
-                merged_optional_params,
-            ) = await litellm_logging_obj.async_get_chat_completion_prompt(
-                model=model,
-                messages=client_input,
-                non_default_params=kwargs,
-                prompt_id=prompt_id,
-                prompt_variables=prompt_variables,
-                prompt_label=kwargs.get("prompt_label", None),
-                prompt_version=kwargs.get("prompt_version", None),
-            )
+            with _cache_control_points_outlive_this_layer(kwargs):
+                (
+                    model,
+                    merged_input,
+                    merged_optional_params,
+                ) = await litellm_logging_obj.async_get_chat_completion_prompt(
+                    model=model,
+                    messages=client_input,
+                    non_default_params=kwargs,
+                    prompt_id=prompt_id,
+                    prompt_variables=prompt_variables,
+                    prompt_label=kwargs.get("prompt_label", None),
+                    prompt_version=kwargs.get("prompt_version", None),
+                )
             input = cast(
                 str | ResponseInputParam,
                 ResponsesAPIRequestUtils.merge_prompt_management_input(
@@ -585,19 +616,20 @@ def _apply_prompt_management_to_responses_call(
     if isinstance(litellm_logging_obj, LiteLLMLoggingObj) and litellm_logging_obj.should_run_prompt_management_hooks(
         prompt_id=prompt_id, non_default_params=kwargs
     ):
-        (
-            model,
-            merged_input,
-            merged_optional_params,
-        ) = litellm_logging_obj.get_chat_completion_prompt(
-            model=model,
-            messages=client_input,
-            non_default_params=kwargs,
-            prompt_id=prompt_id,
-            prompt_variables=prompt_variables,
-            prompt_label=kwargs.get("prompt_label", None),
-            prompt_version=kwargs.get("prompt_version", None),
-        )
+        with _cache_control_points_outlive_this_layer(kwargs):
+            (
+                model,
+                merged_input,
+                merged_optional_params,
+            ) = litellm_logging_obj.get_chat_completion_prompt(
+                model=model,
+                messages=client_input,
+                non_default_params=kwargs,
+                prompt_id=prompt_id,
+                prompt_variables=prompt_variables,
+                prompt_label=kwargs.get("prompt_label", None),
+                prompt_version=kwargs.get("prompt_version", None),
+            )
         input = cast(
             str | ResponseInputParam,
             ResponsesAPIRequestUtils.merge_prompt_management_input(
