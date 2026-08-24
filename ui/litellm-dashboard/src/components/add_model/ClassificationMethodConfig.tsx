@@ -16,7 +16,7 @@ import {
   ClassifierFallback,
   ClassifierType,
   ComplexityRouterConfigValue,
-  DEFAULT_CLASSIFIER_CONTEXT_PER_TURN_CHARS,
+  DEFAULT_CLASSIFIER_CONTEXT_BUDGET_CHARS,
   DEFAULT_CLASSIFIER_CONTEXT_WINDOW_SIZE,
   DEFAULT_CLASSIFIER_FALLBACK,
   DEFAULT_CLASSIFIER_TIMEOUT_MS,
@@ -167,10 +167,11 @@ const ClassificationMethodConfig: React.FC<ClassificationMethodConfigProps> = ({
         classifierType === "llm"
           ? value.classifier_context_window_size ?? DEFAULT_CLASSIFIER_CONTEXT_WINDOW_SIZE
           : undefined,
-      classifier_context_per_turn_chars:
+      classifier_context_budget_chars:
         classifierType === "llm"
-          ? value.classifier_context_per_turn_chars ?? DEFAULT_CLASSIFIER_CONTEXT_PER_TURN_CHARS
+          ? value.classifier_context_budget_chars ?? DEFAULT_CLASSIFIER_CONTEXT_BUDGET_CHARS
           : undefined,
+      classifier_context_per_turn_chars: classifierType === "llm" ? value.classifier_context_per_turn_chars : undefined,
       classifier_context_include_assistant_turns:
         classifierType === "llm" ? value.classifier_context_include_assistant_turns : undefined,
       classifier_fallback: classifierType === "llm" ? value.classifier_fallback : undefined,
@@ -235,10 +236,17 @@ const ClassificationMethodConfig: React.FC<ClassificationMethodConfigProps> = ({
     });
   };
 
+  const handleClassifierContextBudgetCharsChange = (budgetChars: number | null) => {
+    onChange({
+      ...value,
+      classifier_context_budget_chars: budgetChars ?? DEFAULT_CLASSIFIER_CONTEXT_BUDGET_CHARS,
+    });
+  };
+
   const handleClassifierContextPerTurnCharsChange = (perTurnChars: number | null) => {
     onChange({
       ...value,
-      classifier_context_per_turn_chars: perTurnChars ?? DEFAULT_CLASSIFIER_CONTEXT_PER_TURN_CHARS,
+      classifier_context_per_turn_chars: perTurnChars ?? undefined,
     });
   };
 
@@ -411,17 +419,37 @@ const ClassificationMethodConfig: React.FC<ClassificationMethodConfigProps> = ({
             </span>
           </div>
           <div>
+            <strong className="block mb-1 font-semibold">Context Character Budget</strong>
+            <Input
+              type="number"
+              value={value.classifier_context_budget_chars ?? DEFAULT_CLASSIFIER_CONTEXT_BUDGET_CHARS}
+              onChange={(event) =>
+                handleClassifierContextBudgetCharsChange(event.target.value === "" ? null : event.target.valueAsNumber)
+              }
+              min={0}
+              className="w-full"
+            />
+            <span className="text-xs text-muted-foreground">
+              Total characters of prior conversation sent to the classifier. Turns are taken newest first and quoted
+              whole while they fit, so a short conversation is never cut.
+            </span>
+          </div>
+          <div>
             <strong className="block mb-1 font-semibold">Context Per-Turn Character Limit</strong>
             <Input
               type="number"
-              value={value.classifier_context_per_turn_chars ?? DEFAULT_CLASSIFIER_CONTEXT_PER_TURN_CHARS}
+              value={value.classifier_context_per_turn_chars ?? ""}
+              placeholder="No per-turn limit"
               onChange={(event) =>
                 handleClassifierContextPerTurnCharsChange(event.target.value === "" ? null : event.target.valueAsNumber)
               }
               min={1}
               className="w-full"
             />
-            <span className="text-xs text-muted-foreground">Prior turns longer than this are truncated.</span>
+            <span className="text-xs text-muted-foreground">
+              Optional cap on any single prior turn, applied before the budget above. Leave empty to let one long turn
+              use the whole budget.
+            </span>
           </div>
           <div>
             <div className="flex items-center gap-2 mb-1">

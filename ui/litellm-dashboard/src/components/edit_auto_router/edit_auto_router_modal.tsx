@@ -78,6 +78,7 @@ const MANAGED_COMPLEXITY_ROUTER_KEYS = new Set([
   "classifier_type",
   "classifier_llm_config",
   "classifier_context_window_size",
+  "classifier_context_budget_chars",
   "classifier_context_per_turn_chars",
   "classifier_context_include_assistant_turns",
   "classifier_fallback",
@@ -173,6 +174,10 @@ export const buildUpdatedComplexityRouterConfig = (
     ...(value.classifier_type === "llm" &&
       value.classifier_context_window_size !== undefined && {
         classifier_context_window_size: value.classifier_context_window_size,
+      }),
+    ...(value.classifier_type === "llm" &&
+      value.classifier_context_budget_chars !== undefined && {
+        classifier_context_budget_chars: value.classifier_context_budget_chars,
       }),
     ...(value.classifier_type === "llm" &&
       value.classifier_context_per_turn_chars !== undefined && {
@@ -367,6 +372,10 @@ const EditAutoRouterModal: React.FC<EditAutoRouterModalProps> = ({
           classifier_context_window_size:
             typeof parsedConfig.classifier_context_window_size === "number"
               ? parsedConfig.classifier_context_window_size
+              : undefined,
+          classifier_context_budget_chars:
+            typeof parsedConfig.classifier_context_budget_chars === "number"
+              ? parsedConfig.classifier_context_budget_chars
               : undefined,
           classifier_context_per_turn_chars:
             typeof parsedConfig.classifier_context_per_turn_chars === "number"
